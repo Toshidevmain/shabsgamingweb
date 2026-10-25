@@ -1,0 +1,28 @@
+kind = "web"
+previewPath = "/"
+title = "Shabs Gaming"
+description = "A gaming community website for Shabs Gaming where fans can browse gameplay highlights, sign up to react and comment, while only the owner can publish new videos and photos."
+version = "1.0.0"
+id = "artifacts/shabs-gaming"
+router = "path"
+
+[[services]]
+name = "web"
+paths = [ "/" ]
+localPort = 26103
+
+[services.development]
+run = "pnpm --filter @workspace/shabs-gaming run dev"
+
+[services.production]
+build = [ "pnpm", "--filter", "@workspace/shabs-gaming", "run", "build" ]
+serve = "static"
+publicDir = "artifacts/shabs-gaming/dist/public"
+
+[[services.production.rewrites]]
+from = "/*"
+to = "/index.html"
+
+[services.env]
+PORT = "26103"
+BASE_PATH = "/"
