@@ -1,0 +1,14 @@
+{
+  "name": "shabs-gaming/community",
+  "description": "PHP API for the Shabs Gaming highlights community",
+  "type": "project",
+  "require": {
+    "php": "^8.3",
+    "ext-mongodb": "*",
+    "mongodb/mongodb": "^1.20 || ^2.0"
+  },
+  "config": {
+    "sort-packages": true,
+    "optimize-autoloader": true
+  }
+}
