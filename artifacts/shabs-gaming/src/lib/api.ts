@@ -2,11 +2,11 @@ import shabsPortrait from '@assets/6b693d32-4ba9-4cd2-b89e-3507338d35d5-1.jfif_1
 
 export type Reaction = 'heart' | 'fire' | 'gg';
 export type EntityId = string | number;
-export type User = { id: EntityId; name: string; email: string; role: string };
+export type User = { id: EntityId; name: string; email: string; role: string; username: string; bio: string; avatarUrl: string | null };
 export type Comment = { id: EntityId; author: string; content: string; createdAt: string };
 export type Post = {
   id: EntityId; title: string; caption: string; game: string; type: 'image' | 'photo' | 'video'; mediaUrl: string;
-  createdAt: string; author: { name: string; role: string };
+  createdAt: string; author: { name: string; role: string; username?: string; avatarUrl?: string | null };
   reactionCounts: Record<Reaction, number>; myReaction: Reaction | null; comments: Comment[];
 };
 export type FeedResponse = { posts: Post[]; user: User | null; stats: { views: number; highlights: number; community: number } };
@@ -29,7 +29,14 @@ function initialFeed(): FeedResponse {
   };
 }
 function readDemo(): FeedResponse {
-  try { const raw = localStorage.getItem(DEMO_KEY); if (raw) return JSON.parse(raw) as FeedResponse; } catch { /* use fresh preview data */ }
+  try {
+    const raw = localStorage.getItem(DEMO_KEY);
+    if (raw) {
+      const feed = JSON.parse(raw) as FeedResponse;
+      if (feed.user) feed.user = Object.assign({ username: '', bio: '', avatarUrl: null }, feed.user);
+      return feed;
+    }
+  } catch { /* use fresh preview data */ }
   const fresh = initialFeed(); writeDemo(fresh); return fresh;
 }
 function writeDemo(feed: FeedResponse) { localStorage.setItem(DEMO_KEY, JSON.stringify(feed)); }
@@ -41,14 +48,23 @@ async function request<T>(path: string, init?: RequestInit): Promise<T> {
   }
   try {
     const response = await fetch(path, { ...init, credentials: 'include', headers: { ...(init?.body instanceof FormData ? {} : { 'Content-Type': 'application/json' }), ...init?.headers } });
-    if (!response.ok) throw new Error(`Request failed (${response.status}). Please try again.`);
-    return await response.json() as T;
+    const payload = await response.json() as T & { error?: string };
+    if (!response.ok) throw new Error(payload.error || `Request failed (${response.status}). Please try again.`);
+    return payload;
   } catch (error) {
     throw error instanceof Error ? error : new Error('The service could not be reached.');
   }
 }
 class PreviewRequestError extends Error { constructor(message: string) { super(message); this.name = 'PreviewRequestError'; } }
 function shouldUseDemo(error: unknown) { return previewEnabled && (usingPreview || error instanceof PreviewRequestError); }
+function fileAsDataUrl(file: File) {
+  return new Promise<string>((resolve, reject) => {
+    const reader = new FileReader();
+    reader.onload = () => typeof reader.result === 'string' ? resolve(reader.result) : reject(new Error('Could not read the selected photo.'));
+    reader.onerror = () => reject(new Error('Could not read the selected photo.'));
+    reader.readAsDataURL(file);
+  });
+}
 
 export const api = {
   async feed(): Promise<FeedResponse> {
@@ -59,11 +75,11 @@ export const api = {
     try { return (await request<{ user: User | null }>('/api/auth/me')).user; }
     catch (error) { if (shouldUseDemo(error)) return readDemo().user; throw error; }
   },
-  async register(input: { name: string; email: string; password: string; setupCode?: string }): Promise<AuthResponse> {
+  async register(input: { name: string; email: string; password: string }): Promise<AuthResponse> {
     try { return await request<AuthResponse>('/api/auth/register', { method: 'POST', body: JSON.stringify(input) }); }
     catch (error) {
       if (!shouldUseDemo(error)) throw error;
-      const feed = readDemo(); const user = { id: Date.now(), name: input.name, email: input.email, role: input.setupCode?.trim() ? 'owner' : 'member' };
+      const feed = readDemo(); const user: User = { id: Date.now(), name: input.name, email: input.email, role: 'member', username: '', bio: '', avatarUrl: null };
       feed.user = user; writeDemo(feed); return { user };
     }
   },
@@ -71,8 +87,28 @@ export const api = {
     try { return await request<AuthResponse>('/api/auth/login', { method: 'POST', body: JSON.stringify(input) }); }
     catch (error) {
       if (!shouldUseDemo(error)) throw error;
-      const feed = readDemo(); const user = { id: 2, name: input.email.split('@')[0] || 'Player', email: input.email, role: 'member' };
+      const feed = readDemo(); const user: User = { id: 2, name: input.email.split('@')[0] || 'Player', email: input.email, role: 'member', username: '', bio: '', avatarUrl: null };
       feed.user = user; writeDemo(feed); return { user };
+    }
+  },
+  async updateProfile(input: { name: string; username: string; bio: string; avatar?: File }): Promise<User> {
+    const body = new FormData();
+    body.append('name', input.name);
+    body.append('username', input.username);
+    body.append('bio', input.bio);
+    if (input.avatar) body.append('avatar', input.avatar);
+    try { return (await request<{ user: User }>('/api/auth/profile', { method: 'POST', body })).user; }
+    catch (error) {
+      if (!shouldUseDemo(error)) throw error;
+      const feed = readDemo();
+      if (!feed.user) throw new Error('Sign in before editing your profile.');
+      let avatarUrl = feed.user.avatarUrl;
+      if (input.avatar) {
+        if (input.avatar.size > 1_500_000) throw new Error('Local preview profile photos must be 1.5 MB or smaller.');
+        avatarUrl = await fileAsDataUrl(input.avatar);
+      }
+      const user: User = { ...feed.user, name: input.name, username: input.username, bio: input.bio, avatarUrl };
+      feed.user = user; writeDemo(feed); return user;
     }
   },
   async logout(): Promise<void> {

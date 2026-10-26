@@ -3,12 +3,12 @@ import { QueryClient, QueryClientProvider } from '@tanstack/react-query';
 import { ErrorBoundary } from '@/components/error-boundary';
 import { Toaster } from '@/components/ui/toaster';
 import { TooltipProvider } from '@/components/ui/tooltip';
-import { Activity, ChevronDown, CircleAlert, Flame, Heart, ImagePlus, LogIn, MessageCircle, Search, Swords, ThumbsUp, Upload, Users, Video, X } from 'lucide-react';
+import { Activity, ChevronDown, CircleAlert, Flame, Heart, ImagePlus, LogIn, MessageCircle, Search, Swords, ThumbsUp, Upload, Users, Video, X, UserRound, Camera } from 'lucide-react';
 import shabsPortrait from '@assets/6b693d32-4ba9-4cd2-b89e-3507338d35d5-1.jfif_1792914161697.jpg';
 import { api, isPreviewAdapterActive, type EntityId, type FeedResponse, type Post, type Reaction, type User } from '@/lib/api';
 
 const queryClient = new QueryClient();
-type Modal = 'auth' | 'publish' | null;
+type Modal = 'auth' | 'publish' | 'profile' | null;
 type AuthMode = 'login' | 'register';
 
 function when(date: string) {
@@ -35,6 +35,7 @@ function App() {
   const [toast, setToast] = useState('');
   const [busy, setBusy] = useState(false);
   const [preview, setPreview] = useState(false);
+  const [profilePhoto, setProfilePhoto] = useState<File | undefined>();
   const toastTimer = useRef<ReturnType<typeof setTimeout> | null>(null);
 
   const notify = useCallback((message: string) => {
@@ -99,7 +100,7 @@ function App() {
     const values = new FormData(event.currentTarget);
     try {
       const result = authMode === 'register'
-        ? await api.register({ name: String(values.get('name') ?? '').trim(), email: String(values.get('email')), password: String(values.get('password')), ...(String(values.get('setupCode') ?? '').trim() ? { setupCode: String(values.get('setupCode')).trim() } : {}) })
+        ? await api.register({ name: String(values.get('name') ?? '').trim(), email: String(values.get('email')), password: String(values.get('password')) })
         : await api.login({ email: String(values.get('email')), password: String(values.get('password')) });
       setUser(result.user); setFeed((current) => current ? { ...current, user: result.user } : current); setModal(null); setPreview(isPreviewAdapterActive());
       notify(`Welcome${authMode === 'register' ? ' to the community' : ' back'}, ${result.user.name}.`);
@@ -122,6 +123,27 @@ function App() {
     } catch (error) { notify(error instanceof Error ? error.message : 'Upload failed. Please try again.'); }
     finally { setBusy(false); }
   }
+  async function submitProfile(event: FormEvent<HTMLFormElement>) {
+    event.preventDefault();
+    if (!user) return;
+    const values = new FormData(event.currentTarget);
+    setBusy(true);
+    try {
+      const updated = await api.updateProfile({
+        name: String(values.get('name') ?? '').trim(),
+        username: String(values.get('username') ?? '').trim(),
+        bio: String(values.get('bio') ?? '').trim(),
+        ...(profilePhoto ? { avatar: profilePhoto } : {}),
+      });
+      setUser(updated);
+      setFeed((current) => current ? { ...current, user: updated } : current);
+      setProfilePhoto(undefined);
+      setModal(null);
+      setPreview(isPreviewAdapterActive());
+      notify('Profile updated.');
+    } catch (error) { notify(error instanceof Error ? error.message : 'Could not update your profile.'); }
+    finally { setBusy(false); }
+  }
   function toggleComments(id: EntityId) {
     setExpandedComments((ids) => ids.includes(id) ? ids.filter((item) => item !== id) : [...ids, id]);
   }
@@ -130,14 +152,14 @@ function App() {
     <div className="app-shell">
       <header className="topbar">
         <a className="brand" href="/" aria-label="Shabs Gaming home" data-testid="link-home">
-          <span className="brand-mark" aria-hidden="true"><svg viewBox="0 0 32 32" width="24" height="24" fill="none"><path d="M16 2 27 8.2v14.5L16 30 5 22.7V8.2L16 2Z" fill="#1b222b" stroke="#18202a" strokeWidth="1.2"/><path d="m16 2 4.2 10.1L27 8.2 16 2Z" fill="#f0f4f5"/><path d="m16 2-4.1 10.1L5 8.2 16 2Z" fill="#aab4be"/><path d="m5 8.2 6.9 3.9L8.8 24 5 22.7V8.2Z" fill="#74808b"/><path d="m27 8.2-6.8 3.9L23.2 24l3.8-1.3V8.2Z" fill="#c8d0d6"/><path d="m11.9 12.1 4.1-2.2 4.2 2.2L23.2 24 16 30 8.8 24l3.1-11.9Z" fill="#303a45"/><path d="m16 9.9v20.1M11.9 12.1 16 18l4.2-5.9" stroke="#e6edf0" strokeOpacity=".75" strokeWidth=".8"/></svg></span>
-          <span>SHABS<span style={{ color: '#69edbd' }}>.</span>GAMING</span>
+          <img className="obsidian-logo" src="https://reaperxweb.onrender.com/public/obsidian-games-logo.webp" alt="Obsidian Games logo" />
+          <span className="brand-title">SHABS<span>.</span>GAMING</span>
         </a>
         <nav className="top-nav" aria-label="Main navigation">
           <a href="#highlights">Highlights</a><a href="#about">Creator</a><a href="#community">Community</a>
         </nav>
         <div className="top-actions">
-          {user ? <><span className="status-label">{user.name}</span>{user.role === 'owner' && <button className="button primary" onClick={() => setModal('publish')} data-testid="button-publish"><Upload size={15} /> Publish</button>}<button className="button" onClick={() => void logout()} disabled={busy} data-testid="button-logout">Sign out</button></> :
+          {user ? <><button className="profile-control" onClick={() => { setProfilePhoto(undefined); setModal('profile'); }} aria-label={`Edit profile for ${user.name}`} data-testid="button-profile"><span className="profile-control-avatar">{user.avatarUrl ? <img src={user.avatarUrl} alt="" /> : initials(user.name)}</span><span className="profile-control-name">{user.name}<small>{user.username ? `@${user.username}` : 'Set your username'}</small></span><UserRound size={15} /></button>{user.role === 'owner' && <button className="button primary" onClick={() => setModal('publish')} data-testid="button-publish"><Upload size={15} /> Publish</button>}<button className="button" onClick={() => void logout()} disabled={busy} data-testid="button-logout">Sign out</button></> :
             <><button className="button" onClick={() => { setAuthMode('login'); setModal('auth'); }} data-testid="button-login"><LogIn size={15} /> Log in</button><button className="button primary" onClick={() => { setAuthMode('register'); setModal('auth'); }} data-testid="button-join">Join community</button></>}
         </div>
       </header>
@@ -177,7 +199,7 @@ function App() {
               loadError ? <div className="error-state" role="alert"><CircleAlert size={28} /><h3>Highlights unavailable</h3><p>{loadError}</p><button className="button primary" onClick={() => void loadFeed()} data-testid="button-retry">Try again</button></div> :
                 visiblePosts.length ? <div className="post-list">{visiblePosts.map((post, index) => <article className="post-card" style={{ animationDelay: `${Math.min(index * 65, 300)}ms` }} key={post.id} data-testid={`card-post-${post.id}`}>
                   <div className="post-head">
-                    <div className="author-line"><img className="avatar" src={shabsPortrait} alt="" /><div className="author-meta"><strong>{post.author.name}</strong><span>{post.author.role} · {when(post.createdAt)}</span></div></div>
+                    <div className="author-line"><img className="avatar" src={post.author.avatarUrl || shabsPortrait} alt="" /><div className="author-meta"><strong>{post.author.name}</strong><span>{post.author.username ? `@${post.author.username} · ` : ''}{post.author.role} · {when(post.createdAt)}</span></div></div>
                     {user?.role === 'owner' && <button className="button quiet small danger" onClick={() => void removePost(post)} disabled={busyPost === post.id} aria-label={`Delete ${post.title}`} data-testid={`button-delete-${post.id}`}><X size={15} /> Remove</button>}
                   </div>
                   <div className="post-title">{post.title}</div>
@@ -201,8 +223,8 @@ function App() {
 
         <aside className="side-column">
           <section className="side-card creator-card" id="about">
-            <img className="creator-photo" src={shabsPortrait} alt="Shabs, Special Force Alpha moderator and creator" />
-            <div className="creator-info"><div className="status-label">Creator profile</div><div className="creator-name">Shabs</div><div className="creator-role">Special Force Alpha · Moderator / Social Manager</div><p className="creator-bio">Competitive player, community moderator, and the person behind the highlights. Here for the plays and the people.</p></div>
+            <img className="creator-photo" src={user?.role === 'owner' && user.avatarUrl ? user.avatarUrl : shabsPortrait} alt="Shabs, Special Force Alpha moderator and creator" />
+            <div className="creator-info"><div className="status-label">Creator profile</div><div className="creator-name">{user?.role === 'owner' ? user.name : 'Shabs'}</div>{user?.role === 'owner' && user.username && <div className="creator-handle">@{user.username}</div>}<div className="creator-role">Special Force Alpha · Moderator / Social Manager</div><p className="creator-bio">{user?.role === 'owner' && user.bio ? user.bio : 'Competitive player, community moderator, and the person behind the highlights. Here for the plays and the people.'}</p></div>
           </section>
           <section className="side-card" id="community"><h3 className="side-title">The loadout</h3><div className="topic-list"><span className="topic">Special Force Alpha</span><span className="topic">Clutch plays</span><span className="topic">Squad tactics</span><span className="topic">Community</span></div></section>
           <section className="side-card"><h3 className="side-title">Built for the squad</h3><p className="community-note"><b>Watch.</b> Catch the best rounds. <b>React.</b> Let the play speak. <b>Connect.</b> Talk it through with the community.</p>
@@ -219,10 +241,20 @@ function App() {
           {authMode === 'register' && <div className="field"><label htmlFor="auth-name">Display name</label><input id="auth-name" name="name" autoComplete="name" placeholder="How the squad knows you" required minLength={2} maxLength={48} data-testid="input-auth-name" /></div>}
           <div className="field"><label htmlFor="auth-email">Email address</label><input id="auth-email" name="email" type="email" autoComplete="email" placeholder="you@example.com" required data-testid="input-auth-email" /></div>
           <div className="field"><label htmlFor="auth-password">Password</label><input id="auth-password" name="password" type="password" autoComplete={authMode === 'register' ? 'new-password' : 'current-password'} placeholder="At least 10 characters" required minLength={authMode === 'register' ? 10 : 1} maxLength={128} data-testid="input-auth-password" /></div>
-          {authMode === 'register' && <div className="field"><label htmlFor="auth-setup">Creator setup code <span style={{ color: '#8491a1', fontWeight: 400 }}>(optional)</span></label><input id="auth-setup" name="setupCode" type="password" autoComplete="off" placeholder="For the channel owner only" data-testid="input-setup-code" /></div>}
           <button className="button primary" type="submit" disabled={busy} data-testid="button-auth-submit">{busy ? 'One moment…' : authMode === 'register' ? 'Create account' : 'Log in'}</button>
         </form>
         <p className="auth-switch">{authMode === 'register' ? 'Already part of the squad?' : 'New around here?'} <button className="text-button" onClick={() => setAuthMode(authMode === 'register' ? 'login' : 'register')} data-testid="button-switch-auth">{authMode === 'register' ? 'Log in' : 'Create an account'}</button></p>
+      </section></div>}
+
+      {modal === 'profile' && user && <div className="overlay" role="presentation" onMouseDown={(event) => { if (event.target === event.currentTarget) setModal(null); }}><section className="dialog profile-dialog" role="dialog" aria-modal="true" aria-labelledby="profile-title">
+        <div className="dialog-head"><div><div className="dialog-kicker">MEMBER SETTINGS</div><h2 id="profile-title">Your profile</h2><p>Set how the squad sees you.</p></div><button className="icon-button" onClick={() => setModal(null)} aria-label="Close profile editor" data-testid="button-close-profile"><X size={17} /></button></div>
+        <form className="form-stack" onSubmit={(event) => void submitProfile(event)}>
+          <div className="profile-photo-field"><span className="profile-large-avatar">{user.avatarUrl ? <img src={user.avatarUrl} alt={`${user.name} profile`} /> : initials(user.name)}</span><label className="photo-picker" htmlFor="profile-photo"><Camera size={15} /> Change photo</label><input id="profile-photo" type="file" accept="image/jpeg,image/png,image/webp" onChange={(event) => setProfilePhoto(event.currentTarget.files?.[0])} data-testid="input-profile-photo" /><span className="photo-hint">{profilePhoto ? `${profilePhoto.name} selected` : 'JPG, PNG, or WebP · up to 5 MB.'}</span></div>
+          <div className="field"><label htmlFor="profile-name">Display name</label><input id="profile-name" name="name" defaultValue={user.name} required minLength={2} maxLength={48} autoComplete="name" data-testid="input-profile-name" /></div>
+          <div className="field"><label htmlFor="profile-username">Username</label><div className="username-input"><span>@</span><input id="profile-username" name="username" defaultValue={user.username} minLength={3} maxLength={24} autoComplete="username" placeholder="yourhandle" required data-testid="input-profile-username" /></div></div>
+          <div className="field"><label htmlFor="profile-bio">Bio</label><textarea id="profile-bio" name="bio" defaultValue={user.bio} maxLength={160} placeholder="What do you bring to the squad?" data-testid="input-profile-bio" /></div>
+          <button className="button primary" type="submit" disabled={busy} data-testid="button-profile-save">{busy ? 'Saving profile…' : 'Save profile'}</button>
+        </form>
       </section></div>}
 
       {modal === 'publish' && user?.role === 'owner' && <div className="overlay" role="presentation" onMouseDown={(event) => { if (event.target === event.currentTarget) setModal(null); }}><section className="dialog" role="dialog" aria-modal="true" aria-labelledby="publish-title">

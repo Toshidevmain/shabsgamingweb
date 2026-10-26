@@ -105,6 +105,7 @@ function ensureIndexes(MongoDB\Database $database): void
         return;
     }
     $database->selectCollection('users')->createIndex(['email' => 1], ['unique' => true]);
+    $database->selectCollection('users')->createIndex(['username' => 1], ['unique' => true, 'sparse' => true]);
     $database->selectCollection('comments')->createIndex(['postId' => 1, 'createdAt' => -1]);
     $database->selectCollection('reactions')->createIndex(
         ['postId' => 1, 'userId' => 1],
@@ -152,11 +153,15 @@ function requireOwner(): array
 
 function publicUser(array $user): array
 {
+    $avatarId = $user['avatarId'] ?? null;
     return [
         'id' => (string) $user['_id'],
         'name' => (string) ($user['name'] ?? 'Player'),
         'email' => (string) ($user['email'] ?? ''),
         'role' => (string) ($user['role'] ?? 'member'),
+        'username' => (string) ($user['username'] ?? ''),
+        'bio' => (string) ($user['bio'] ?? ''),
+        'avatarUrl' => $avatarId instanceof ObjectId ? '/api/media/' . (string) $avatarId : null,
     ];
 }
 
@@ -234,6 +239,8 @@ function postCard(array $post, ?string $viewerId): array
         'author' => [
             'name' => (string) ($post['authorName'] ?? 'Shabs'),
             'role' => 'Special Force Alpha Moderator / Social Manager',
+            'username' => (string) ($post['authorUsername'] ?? ''),
+            'avatarUrl' => isset($post['authorAvatarUrl']) ? (string) $post['authorAvatarUrl'] : null,
         ],
         'reactionCounts' => $reactionCounts,
         'myReaction' => $myReaction,
@@ -379,6 +386,93 @@ function routeRequest(): void
         respond(['ok' => true]);
     }
 
+    if ($method === 'POST' && $path === '/api/auth/profile') {
+        $user = requireUser();
+        $input = str_starts_with(strtolower($_SERVER['CONTENT_TYPE'] ?? ''), 'application/json')
+            ? requestJson()
+            : $_POST;
+        $name = trim((string) ($input['name'] ?? ''));
+        $username = strtolower(trim((string) ($input['username'] ?? '')));
+        $bio = trim((string) ($input['bio'] ?? ''));
+        if (strlen($name) < 2 || strlen($name) > 48) {
+            respond(['error' => 'Name must be between 2 and 48 characters.'], 422);
+        }
+        if (!preg_match('/^[a-z0-9_]{3,24}$/', $username)) {
+            respond(['error' => 'Username must be 3–24 characters using letters, numbers, or underscores.'], 422);
+        }
+        if (strlen($bio) > 160) {
+            respond(['error' => 'Bio must be 160 characters or fewer.'], 422);
+        }
+
+        $users = mongoDatabase()->selectCollection('users');
+        $userId = new ObjectId($user['id']);
+        if ($users->findOne(['username' => $username, '_id' => ['$ne' => $userId]], ['projection' => ['_id' => 1]])) {
+            respond(['error' => 'That username is already taken.'], 409);
+        }
+
+        $userDocument = $users->findOne(['_id' => $userId]);
+        if (!$userDocument) {
+            respond(['error' => 'Account not found.'], 404);
+        }
+        $oldAvatarId = $userDocument['avatarId'] ?? null;
+        $set = ['name' => $name, 'username' => $username, 'bio' => $bio];
+        $newAvatarId = null;
+        $avatarFile = $_FILES['avatar'] ?? null;
+        if (is_array($avatarFile) && ($avatarFile['error'] ?? UPLOAD_ERR_NO_FILE) !== UPLOAD_ERR_NO_FILE) {
+            if (($avatarFile['error'] ?? UPLOAD_ERR_NO_FILE) !== UPLOAD_ERR_OK || !is_uploaded_file($avatarFile['tmp_name'])) {
+                respond(['error' => 'The profile photo could not be uploaded.'], 422);
+            }
+            if ((int) ($avatarFile['size'] ?? 0) > 5 * 1024 * 1024) {
+                respond(['error' => 'Profile photos must be 5 MB or smaller.'], 413);
+            }
+            $mime = (new finfo(FILEINFO_MIME_TYPE))->file($avatarFile['tmp_name']) ?: '';
+            if (!in_array($mime, ['image/jpeg', 'image/png', 'image/webp'], true)) {
+                respond(['error' => 'Choose a JPG, PNG, or WebP profile photo.'], 422);
+            }
+            $source = fopen($avatarFile['tmp_name'], 'rb');
+            if ($source === false) {
+                respond(['error' => 'The profile photo could not be read.'], 400);
+            }
+            try {
+                $newAvatarId = gridFsBucket()->uploadFromStream(
+                    basename((string) ($avatarFile['name'] ?? 'profile-photo')),
+                    $source,
+                    ['metadata' => [
+                        'contentType' => $mime,
+                        'userId' => $user['id'],
+                        'purpose' => 'avatar',
+                    ]],
+                );
+            } finally {
+                fclose($source);
+            }
+            $set['avatarId'] = $newAvatarId;
+        }
+
+        $users->updateOne(['_id' => $userId], ['$set' => $set]);
+        $authorFields = ['authorName' => $name, 'authorUsername' => $username];
+        if ($newAvatarId instanceof ObjectId) {
+            $authorFields['authorAvatarUrl'] = '/api/media/' . (string) $newAvatarId;
+        }
+        mongoDatabase()->selectCollection('posts')->updateMany(
+            ['authorId' => $user['id']],
+            ['$set' => $authorFields],
+        );
+        mongoDatabase()->selectCollection('comments')->updateMany(
+            ['userId' => $user['id']],
+            ['$set' => ['authorName' => $name]],
+        );
+        if ($newAvatarId instanceof ObjectId && $oldAvatarId instanceof ObjectId && $oldAvatarId != $newAvatarId) {
+            try {
+                gridFsBucket()->delete($oldAvatarId);
+            } catch (Throwable) {
+                error_log('Shabs Gaming could not remove a replaced profile photo.');
+            }
+        }
+        $updatedUser = $users->findOne(['_id' => $userId]);
+        respond(['user' => publicUser($updatedUser)]);
+    }
+
     if ($method === 'GET' && $path === '/api/feed') {
         $database = mongoDatabase();
         $user = currentUser();
@@ -458,6 +552,8 @@ function routeRequest(): void
             'mediaId' => $mediaId,
             'authorId' => $owner['id'],
             'authorName' => $owner['name'],
+            'authorUsername' => $owner['username'] ?? '',
+            'authorAvatarUrl' => $owner['avatarUrl'] ?? null,
             'views' => 0,
             'createdAt' => new UTCDateTime(),
         ]);
