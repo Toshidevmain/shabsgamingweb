@@ -1,4 +1,4 @@
-modules = ["nodejs-24", "php-8.4"]
+modules = ["nodejs-24"]
 
 [deployment]
 router = "application"
@@ -18,15 +18,3 @@ expertMode = true
 [postMerge]
 path = "scripts/post-merge.sh"
 timeoutMs = 20000
-
-[workflows]
-runButton = "Project"
-
-[[workflows.workflow]]
-name = "Project"
-author = "agent"
-
-[[workflows.workflow.taskList]]
-task = "shell.exec"
-args = "PORT=5173 BASE_PATH=/ pnpm --filter @workspace/shabs-gaming run dev"
-waitForPort = 5173
