@@ -20,6 +20,9 @@ RUN apt-get update \
     && rm -rf /var/lib/apt/lists/*
 
 RUN a2enmod rewrite headers
+ENV APACHE_DOCUMENT_ROOT /var/www/html/public
+RUN sed -ri -e 's!/var/www/html!${APACHE_DOCUMENT_ROOT}!g' /etc/apache2/sites-available/*.conf /etc/apache2/apache2.conf /etc/apache2/conf-available/*.conf
+RUN sed -ri -e 's/AllowOverride None/AllowOverride All/g' /etc/apache2/apache2.conf /etc/apache2/sites-available/*.conf
 WORKDIR /var/www/html
 COPY artifacts/shabs-gaming/backend/public/ ./public/
 COPY --from=php-dependencies /app/vendor/ ./vendor/

@@ -2,7 +2,8 @@ import shabsPortrait from '@assets/6b693d32-4ba9-4cd2-b89e-3507338d35d5-1.jfif_1
 
 export type Reaction = 'heart' | 'fire' | 'gg';
 export type EntityId = string | number;
-export type User = { id: EntityId; name: string; email: string; role: string; username: string; bio: string; avatarUrl: string | null };
+export type User = { id: EntityId; name: string; email: string; role: string; username: string; bio: string; avatarUrl: string | null; banned?: boolean };
+export type AdminUser = { id: EntityId; name: string; email: string; role: string; username: string; banned: boolean; createdAt: string };
 export type Comment = { id: EntityId; author: string; content: string; createdAt: string };
 export type Post = {
   id: EntityId; title: string; caption: string; game: string; type: 'image' | 'photo' | 'video'; mediaUrl: string;
@@ -12,9 +13,10 @@ export type Post = {
 export type FeedResponse = { posts: Post[]; user: User | null; stats: { views: number; highlights: number; community: number } };
 export type AuthResponse = { user: User };
 
-const DEMO_KEY = 'shabs-gaming-preview-v1';
 const previewEnabled = import.meta.env.DEV;
 let usingPreview = false;
+let demoFeed: FeedResponse | null = null;
+let demoUsers: AdminUser[] | null = null;
 export const isPreviewAdapterActive = () => usingPreview;
 
 function initialFeed(): FeedResponse {
@@ -28,35 +30,71 @@ function initialFeed(): FeedResponse {
     ],
   };
 }
-function readDemo(): FeedResponse {
-  try {
-    const raw = localStorage.getItem(DEMO_KEY);
-    if (raw) {
-      const feed = JSON.parse(raw) as FeedResponse;
-      if (feed.user) feed.user = Object.assign({ username: '', bio: '', avatarUrl: null }, feed.user);
-      return feed;
-    }
-  } catch { /* use fresh preview data */ }
-  const fresh = initialFeed(); writeDemo(fresh); return fresh;
+
+function persistDemo() {
+  try { window.name = 'shabs-demo:' + JSON.stringify({ feed: demoFeed, users: demoUsers }); } catch {  }
 }
-function writeDemo(feed: FeedResponse) { localStorage.setItem(DEMO_KEY, JSON.stringify(feed)); }
+
+function readDemo(): FeedResponse {
+  if (!demoFeed) {
+    try {
+      const parsed = JSON.parse(window.name.startsWith('shabs-demo:') ? window.name.slice('shabs-demo:'.length) : '{}');
+      demoFeed = (parsed.feed ?? initialFeed()) as FeedResponse;
+      demoUsers = (parsed.users ?? null) as AdminUser[] | null;
+    } catch {
+      demoFeed = initialFeed();
+    }
+  }
+  if (demoFeed!.user) demoFeed!.user = Object.assign({ username: '', bio: '', avatarUrl: null, banned: false }, demoFeed!.user);
+  return demoFeed!;
+}
+
+function writeDemo(feed: FeedResponse) { demoFeed = feed; persistDemo(); }
+
+function readDemoUsers(): AdminUser[] {
+  if (!demoUsers) {
+    readDemo();
+  }
+  if (!demoUsers) {
+    demoUsers = [
+      { id: 1, name: 'Shabs', email: 'admin@shabs.gaming', role: 'owner', username: 'shabs', banned: false, createdAt: new Date().toISOString() },
+      { id: 2, name: 'Renz', email: 'renz@example.com', role: 'member', username: 'renz', banned: false, createdAt: new Date().toISOString() },
+    ];
+  }
+  return demoUsers!;
+}
+
+function writeDemoUsers(users: AdminUser[]) { demoUsers = users; persistDemo(); }
+
+
+function demoUserByEmail(email: string) {
+  return readDemoUsers().find((item) => item.email.toLowerCase() === email.trim().toLowerCase());
+}
+
+function currentDemoUserBanned(user: User | null): boolean {
+  if (!user) return false;
+  const found = readDemoUsers().find((item) => String(item.id) === String(user.id) || item.email.toLowerCase() === user.email.toLowerCase());
+  return Boolean(found?.banned);
+}
+
 function useDemo() { usingPreview = true; }
+
 async function request<T>(path: string, init?: RequestInit): Promise<T> {
   if (previewEnabled) {
     useDemo();
-    throw new PreviewRequestError('The PHP API is available in the Docker deployment.');
+    throw new Error('preview');
   }
-  try {
-    const response = await fetch(path, { ...init, credentials: 'include', headers: { ...(init?.body instanceof FormData ? {} : { 'Content-Type': 'application/json' }), ...init?.headers } });
-    const payload = await response.json() as T & { error?: string };
-    if (!response.ok) throw new Error(payload.error || `Request failed (${response.status}). Please try again.`);
-    return payload;
-  } catch (error) {
-    throw error instanceof Error ? error : new Error('The service could not be reached.');
-  }
+  const response = await fetch(path, { ...init, credentials: 'include', headers: { ...(init?.body instanceof FormData ? {} : { 'Content-Type': 'application/json' }), ...init?.headers } });
+  const text = await response.text();
+  let payload: T & { error?: string };
+  try { payload = JSON.parse(text) as T & { error?: string }; }
+  catch { throw new Error('The API server is unavailable. Deploy the backend (Docker/Render) to use the app.'); }
+  if (!response.ok) throw new Error(payload.error || `Request failed (${response.status}). Please try again.`);
+  return payload;
 }
-class PreviewRequestError extends Error { constructor(message: string) { super(message); this.name = 'PreviewRequestError'; } }
-function shouldUseDemo(error: unknown) { return previewEnabled && (usingPreview || error instanceof PreviewRequestError); }
+
+function shouldUseDemo(error: unknown) { return previewEnabled && (usingPreview || (error instanceof Error && error.message === 'preview')); }
+
 function fileAsDataUrl(file: File) {
   return new Promise<string>((resolve, reject) => {
     const reader = new FileReader();
@@ -69,26 +107,62 @@ function fileAsDataUrl(file: File) {
 export const api = {
   async feed(): Promise<FeedResponse> {
     try { return await request<FeedResponse>('/api/feed'); }
-    catch (error) { if (shouldUseDemo(error)) return readDemo(); throw error; }
+    catch (error) {
+      if (!shouldUseDemo(error)) throw error;
+      const feed = readDemo();
+      if (feed.user && currentDemoUserBanned(feed.user)) {
+        feed.user = null;
+        writeDemo(feed);
+      }
+      return feed;
+    }
   },
   async me(): Promise<User | null> {
     try { return (await request<{ user: User | null }>('/api/auth/me')).user; }
-    catch (error) { if (shouldUseDemo(error)) return readDemo().user; throw error; }
+    catch (error) {
+      if (!shouldUseDemo(error)) throw error;
+      const feed = readDemo();
+      if (feed.user && currentDemoUserBanned(feed.user)) {
+        feed.user = null;
+        writeDemo(feed);
+        return null;
+      }
+      return feed.user;
+    }
   },
   async register(input: { name: string; email: string; password: string }): Promise<AuthResponse> {
     try { return await request<AuthResponse>('/api/auth/register', { method: 'POST', body: JSON.stringify(input) }); }
     catch (error) {
       if (!shouldUseDemo(error)) throw error;
       const feed = readDemo(); const user: User = { id: Date.now(), name: input.name, email: input.email, role: 'member', username: '', bio: '', avatarUrl: null };
-      feed.user = user; writeDemo(feed); return { user };
+      const users = readDemoUsers();
+      if (users.some((item) => item.email.toLowerCase() === user.email.toLowerCase())) {
+        throw new Error('An account with this email already exists.');
+      }
+      users.push({ id: user.id as EntityId, name: user.name, email: user.email, role: 'member', username: '', banned: false, createdAt: new Date().toISOString() });
+      writeDemoUsers(users);
+      feed.user = user; writeDemo(feed);
+      return { user };
     }
   },
   async login(input: { email: string; password: string }): Promise<AuthResponse> {
     try { return await request<AuthResponse>('/api/auth/login', { method: 'POST', body: JSON.stringify(input) }); }
     catch (error) {
       if (!shouldUseDemo(error)) throw error;
-      const feed = readDemo(); const user: User = { id: 2, name: input.email.split('@')[0] || 'Player', email: input.email, role: 'member', username: '', bio: '', avatarUrl: null };
-      feed.user = user; writeDemo(feed); return { user };
+      const feed = readDemo();
+      const existing = demoUserByEmail(input.email);
+      if (existing?.banned) {
+        throw new Error('This account has been banned.');
+      }
+      const isAdmin = input.email.trim().toLowerCase() === 'admin@shabs.gaming';
+      const user: User = { id: existing?.id ?? 2, name: existing?.name ?? (input.email.split('@')[0] || 'Player'), email: input.email, role: existing?.role ?? (isAdmin ? 'owner' : 'member'), username: existing?.username ?? (isAdmin ? 'shabs' : ''), bio: isAdmin ? 'Competitive player, community moderator, and the person behind the highlights.' : '', avatarUrl: null };
+      const users = readDemoUsers();
+      if (!users.some((item) => item.email.toLowerCase() === user.email.toLowerCase())) {
+        users.push({ id: user.id as EntityId, name: user.name, email: user.email, role: user.role, username: user.username, banned: false, createdAt: new Date().toISOString() });
+        writeDemoUsers(users);
+      }
+      feed.user = user; writeDemo(feed);
+      return { user };
     }
   },
   async updateProfile(input: { name: string; username: string; bio: string; avatar?: File }): Promise<User> {
@@ -151,6 +225,40 @@ export const api = {
     catch (error) {
       if (!shouldUseDemo(error)) throw error;
       const feed = readDemo(); feed.posts = feed.posts.filter((post) => post.id !== id); writeDemo(feed);
+    }
+  },
+  async adminUsers(): Promise<AdminUser[]> {
+    try { return (await request<{ users: AdminUser[] }>('/api/admin/users')).users; }
+    catch (error) {
+      if (!shouldUseDemo(error)) throw error;
+      return readDemoUsers();
+    }
+  },
+  async banUser(id: EntityId, banned: boolean): Promise<void> {
+    try { await request<{ user: AdminUser }>(`/api/admin/users/${id}/ban`, { method: 'POST', body: JSON.stringify({ banned }) }); }
+    catch (error) {
+      if (!shouldUseDemo(error)) throw error;
+      const users = readDemoUsers().map((item) => item.id === id ? { ...item, banned } : item);
+      writeDemoUsers(users);
+      if (banned) {
+        const feed = readDemo();
+        if (feed.user && users.find((item) => String(item.id) === String(feed.user!.id))?.banned) {
+          feed.user = null;
+          writeDemo(feed);
+        }
+      }
+    }
+  },
+  async deleteUser(id: EntityId): Promise<void> {
+    try { await request<{ ok: true }>(`/api/admin/users/${id}`, { method: 'DELETE' }); }
+    catch (error) {
+      if (!shouldUseDemo(error)) throw error;
+      writeDemoUsers(readDemoUsers().filter((item) => item.id !== id));
+      const feed = readDemo();
+      if (feed.user && String(feed.user.id) === String(id)) {
+        feed.user = null;
+        writeDemo(feed);
+      }
     }
   },
 };

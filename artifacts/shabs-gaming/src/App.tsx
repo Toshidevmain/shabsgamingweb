@@ -3,12 +3,12 @@ import { QueryClient, QueryClientProvider } from '@tanstack/react-query';
 import { ErrorBoundary } from '@/components/error-boundary';
 import { Toaster } from '@/components/ui/toaster';
 import { TooltipProvider } from '@/components/ui/tooltip';
-import { Activity, ChevronDown, CircleAlert, Flame, Heart, ImagePlus, LogIn, MessageCircle, Search, Swords, ThumbsUp, Upload, Users, Video, X, UserRound, Camera } from 'lucide-react';
+import { Activity, ChevronDown, CircleAlert, Flame, Heart, ImagePlus, LogIn, Menu, MessageCircle, Search, Swords, ThumbsUp, Upload, Users, Video, X, UserRound, Camera } from 'lucide-react';
 import shabsPortrait from '@assets/6b693d32-4ba9-4cd2-b89e-3507338d35d5-1.jfif_1792914161697.jpg';
-import { api, isPreviewAdapterActive, type EntityId, type FeedResponse, type Post, type Reaction, type User } from '@/lib/api';
+import { api, isPreviewAdapterActive, type AdminUser, type EntityId, type FeedResponse, type Post, type Reaction, type User } from '@/lib/api';
 
 const queryClient = new QueryClient();
-type Modal = 'auth' | 'publish' | 'profile' | null;
+type Modal = 'auth' | 'publish' | 'profile' | 'users' | null;
 type AuthMode = 'login' | 'register';
 
 function when(date: string) {
@@ -36,6 +36,9 @@ function App() {
   const [busy, setBusy] = useState(false);
   const [preview, setPreview] = useState(false);
   const [profilePhoto, setProfilePhoto] = useState<File | undefined>();
+  const [mobileMenu, setMobileMenu] = useState(false);
+  const [adminUsers, setAdminUsers] = useState<AdminUser[]>([]);
+  const [adminBusy, setAdminBusy] = useState(false);
   const toastTimer = useRef<ReturnType<typeof setTimeout> | null>(null);
 
   const notify = useCallback((message: string) => {
@@ -57,6 +60,13 @@ function App() {
     void api.me().then((current) => { setUser((existing) => existing ?? current); setPreview(isPreviewAdapterActive()); }).catch(() => undefined);
   }, [loadFeed]);
 
+
+  const loadAdminUsers = useCallback(async () => {
+    setAdminBusy(true);
+    try { setAdminUsers(await api.adminUsers()); }
+    catch (error) { notify(error instanceof Error ? error.message : 'Could not load users.'); }
+    finally { setAdminBusy(false); }
+  }, [notify]);
   const allGames = useMemo(() => ['All highlights', ...Array.from(new Set(feed?.posts.map((post) => post.game) ?? []))], [feed?.posts]);
   const visiblePosts = useMemo(() => (feed?.posts ?? []).filter((post) => {
     const matchesGame = gameFilter === 'All highlights' || post.game === gameFilter;
@@ -152,14 +162,14 @@ function App() {
     <div className="app-shell">
       <header className="topbar">
         <a className="brand" href="/" aria-label="Shabs Gaming home" data-testid="link-home">
-          <img className="obsidian-logo" src="https://reaperxweb.onrender.com/public/obsidian-games-logo.webp" alt="Obsidian Games logo" />
           <span className="brand-title">SHABS<span>.</span>GAMING</span>
         </a>
         <nav className="top-nav" aria-label="Main navigation">
           <a href="#highlights">Highlights</a><a href="#about">Creator</a><a href="#community">Community</a>
         </nav>
         <div className="top-actions">
-          {user ? <><button className="profile-control" onClick={() => { setProfilePhoto(undefined); setModal('profile'); }} aria-label={`Edit profile for ${user.name}`} data-testid="button-profile"><span className="profile-control-avatar">{user.avatarUrl ? <img src={user.avatarUrl} alt="" /> : initials(user.name)}</span><span className="profile-control-name">{user.name}<small>{user.username ? `@${user.username}` : 'Set your username'}</small></span><UserRound size={15} /></button>{user.role === 'owner' && <button className="button primary" onClick={() => setModal('publish')} data-testid="button-publish"><Upload size={15} /> Publish</button>}<button className="button" onClick={() => void logout()} disabled={busy} data-testid="button-logout">Sign out</button></> :
+          <button className="burger-button" onClick={() => setMobileMenu((v) => !v)} aria-label="Open menu" data-testid="button-burger"><Menu size={20} /></button>
+          {user ? <><button className="profile-control" onClick={() => { setProfilePhoto(undefined); setModal('profile'); }} aria-label={`Edit profile for ${user.name}`} data-testid="button-profile"><span className="profile-control-avatar">{user.avatarUrl ? <img src={user.avatarUrl} alt="" /> : initials(user.name)}</span><span className="profile-control-name">{user.name}<small>{user.username ? `@${user.username}` : 'Set your username'}</small></span><UserRound size={15} /></button>{user.role === 'owner' && <><button className="button" onClick={() => { setModal('users'); void loadAdminUsers(); }} data-testid="button-users">Users</button><button className="button primary" onClick={() => setModal('publish')} data-testid="button-publish"><Upload size={15} /> Publish</button></>}<button className="button" onClick={() => void logout()} disabled={busy} data-testid="button-logout">Sign out</button></> :
             <><button className="button" onClick={() => { setAuthMode('login'); setModal('auth'); }} data-testid="button-login"><LogIn size={15} /> Log in</button><button className="button primary" onClick={() => { setAuthMode('register'); setModal('auth'); }} data-testid="button-join">Join community</button></>}
         </div>
       </header>
@@ -229,7 +239,6 @@ function App() {
           <section className="side-card" id="community"><h3 className="side-title">The loadout</h3><div className="topic-list"><span className="topic">Special Force Alpha</span><span className="topic">Clutch plays</span><span className="topic">Squad tactics</span><span className="topic">Community</span></div></section>
           <section className="side-card"><h3 className="side-title">Built for the squad</h3><p className="community-note"><b>Watch.</b> Catch the best rounds. <b>React.</b> Let the play speak. <b>Connect.</b> Talk it through with the community.</p>
             {!user && <button className="button primary small" style={{ marginTop: 15 }} onClick={() => { setAuthMode('register'); setModal('auth'); }} data-testid="button-join-sidebar">Join the community</button>}
-            {user && <div className="demo-note">Signed in as {user.name}. Publishing is reserved for the creator.</div>}
           </section>
           <div className="status-label" style={{ justifyContent: 'center', padding: 5 }}>Shabs Gaming · Competitive community</div>
         </aside>
@@ -254,6 +263,7 @@ function App() {
           <div className="field"><label htmlFor="profile-username">Username</label><div className="username-input"><span>@</span><input id="profile-username" name="username" defaultValue={user.username} minLength={3} maxLength={24} autoComplete="username" placeholder="yourhandle" required data-testid="input-profile-username" /></div></div>
           <div className="field"><label htmlFor="profile-bio">Bio</label><textarea id="profile-bio" name="bio" defaultValue={user.bio} maxLength={160} placeholder="What do you bring to the squad?" data-testid="input-profile-bio" /></div>
           <button className="button primary" type="submit" disabled={busy} data-testid="button-profile-save">{busy ? 'Saving profile…' : 'Save profile'}</button>
+          <button className="button" type="button" disabled={busy} onClick={() => { setModal(null); void logout(); }} data-testid="button-logout-profile">Sign out</button>
         </form>
       </section></div>}
 
@@ -267,6 +277,34 @@ function App() {
           <button className="button primary" type="submit" disabled={busy} data-testid="button-publish-submit">{busy ? 'Uploading…' : 'Publish highlight'}</button>
         </form>
       </section></div>}
+      <footer className="site-footer"><img className="obsidian-logo" src="https://reaperxweb.onrender.com/public/obsidian-games-logo.webp" alt="Obsidian Games logo" /></footer>
+      {modal === 'users' && user?.role === 'owner' && <div className="overlay" role="presentation" onMouseDown={(event) => { if (event.target === event.currentTarget) setModal(null); }}><section className="dialog" role="dialog" aria-modal="true" aria-labelledby="users-title">
+        <div className="dialog-head"><div><h2 id="users-title">Community users</h2><p>Manage members and access.</p></div><button className="icon-button" onClick={() => setModal(null)} aria-label="Close users dialog"><X size={17} /></button></div>
+        {adminBusy ? <div className="demo-note">Loading users…</div> : <div className="user-admin-list">
+          {adminUsers.map((item) => <div className="user-admin-row" key={item.id} data-testid={`user-row-${item.id}`}>
+            <div><strong>{item.name}</strong><span>{item.email} · {item.role}{item.banned ? ' · banned' : ''}</span></div>
+            <div className="user-admin-actions">
+              {item.role !== 'owner' && <button className="button small" disabled={adminBusy} onClick={async () => { setAdminBusy(true); try { await api.banUser(item.id, !item.banned); await loadAdminUsers(); notify(item.banned ? 'User unbanned.' : 'User banned.'); } catch (error) { notify(error instanceof Error ? error.message : 'Could not update user.'); } finally { setAdminBusy(false); } }} data-testid={`button-ban-${item.id}`}>{item.banned ? 'Unban' : 'Ban'}</button>}
+              {item.role !== 'owner' && <button className="button small danger" disabled={adminBusy} onClick={async () => { if (!window.confirm(`Delete ${item.name}?`)) return; setAdminBusy(true); try { await api.deleteUser(item.id); await loadAdminUsers(); notify('User deleted.'); } catch (error) { notify(error instanceof Error ? error.message : 'Could not delete user.'); } finally { setAdminBusy(false); } }} data-testid={`button-delete-user-${item.id}`}>Delete</button>}
+            </div>
+          </div>)}
+        </div>}
+      </section></div>}
+      {mobileMenu && <div className="mobile-menu-overlay" onMouseDown={() => setMobileMenu(false)}><nav className="mobile-menu" onMouseDown={(event) => event.stopPropagation()}>
+        <button className="icon-button mobile-menu-close" onClick={() => setMobileMenu(false)} aria-label="Close menu"><X size={17} /></button>
+        <a href="#highlights" onClick={() => setMobileMenu(false)}>Highlights</a>
+        <a href="#about" onClick={() => setMobileMenu(false)}>Creator</a>
+        <a href="#community" onClick={() => setMobileMenu(false)}>Community</a>
+        {user ? <>
+          <button onClick={() => { setProfilePhoto(undefined); setModal('profile'); setMobileMenu(false); }}>Edit profile</button>
+          {user.role === 'owner' && <button onClick={() => { setModal('publish'); setMobileMenu(false); }}>Publish highlight</button>}
+          {user.role === 'owner' && <button onClick={() => { setModal('users'); void loadAdminUsers(); setMobileMenu(false); }}>Manage users</button>}
+          <button onClick={() => { setMobileMenu(false); void logout(); }}>Sign out</button>
+        </> : <>
+          <button onClick={() => { setAuthMode('login'); setModal('auth'); setMobileMenu(false); }}>Log in</button>
+          <button onClick={() => { setAuthMode('register'); setModal('auth'); setMobileMenu(false); }}>Join community</button>
+        </>}
+      </nav></div>}
       {toast && <div className="toast-msg" role="status" data-testid="status-toast">{toast}</div>}
     </div>
   );

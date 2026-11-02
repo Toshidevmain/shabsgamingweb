@@ -95,6 +95,7 @@ function mongoDatabase(): MongoDB\Database
         'typeMap' => ['root' => 'array', 'document' => 'array', 'array' => 'array'],
     ]);
     ensureIndexes($database);
+    ensureAdminAccount($database);
     return $database;
 }
 
@@ -118,6 +119,50 @@ function ensureIndexes(MongoDB\Database $database): void
     $ready = true;
 }
 
+function ensureAdminAccount(MongoDB\Database $database): void
+{
+    static $seeded = false;
+    if ($seeded) {
+        return;
+    }
+    $seeded = true;
+
+    $email = strtolower(trim((string) (getenv('ADMIN_EMAIL') ?: 'admin@shabs.gaming')));
+    if (!filter_var($email, FILTER_VALIDATE_EMAIL)) {
+        return;
+    }
+    $password = (string) (getenv('ADMIN_PASSWORD') ?: (getenv('ADMIN_SETUP_TOKEN') ?: 'shabs-gaming-admin'));
+    if ($password === '') {
+        return;
+    }
+    $name = trim((string) (getenv('ADMIN_NAME') ?: 'Shabs'));
+    if (strlen($name) < 2 || strlen($name) > 48) {
+        $name = 'Shabs';
+    }
+    $username = strtolower(trim((string) (getenv('ADMIN_USERNAME') ?: 'shabs')));
+    if (!preg_match('/^[a-z0-9_]{3,24}$/', $username)) {
+        $username = 'shabs';
+    }
+
+    $users = $database->selectCollection('users');
+    if ($users->findOne(['email' => $email], ['projection' => ['_id' => 1]])) {
+        return;
+    }
+    $passwordHash = password_hash(
+        $password,
+        defined('PASSWORD_ARGON2ID') ? PASSWORD_ARGON2ID : PASSWORD_DEFAULT,
+    );
+    $users->insertOne([
+        'name' => $name,
+        'email' => $email,
+        'passwordHash' => $passwordHash,
+        'role' => 'owner',
+        'username' => $username,
+        'bio' => 'Competitive player, community moderator, and the person behind the highlights.',
+        'createdAt' => new UTCDateTime(),
+    ]);
+}
+
 function gridFsBucket(): Bucket
 {
     return mongoDatabase()->selectGridFSBucket();
@@ -130,17 +175,37 @@ function currentUser(): ?array
         return null;
     }
     $user = mongoDatabase()->selectCollection('users')->findOne(['_id' => new ObjectId($userId)]);
-    return $user ? publicUser($user) : null;
+    if (!$user) {
+        unset($_SESSION['userId']);
+        $_SESSION = [];
+        return null;
+    }
+    if (!empty($user['banned'])) {
+        unset($_SESSION['userId']);
+        $_SESSION = [];
+        return null;
+    }
+    return publicUser($user);
 }
 
 function requireUser(): array
 {
+    $userId = $_SESSION['userId'] ?? null;
+    if (is_string($userId) && preg_match('/^[a-f0-9]{24}$/i', $userId)) {
+        $rawUser = mongoDatabase()->selectCollection('users')->findOne(['_id' => new ObjectId($userId)]);
+        if (is_array($rawUser) && !empty($rawUser['banned'])) {
+            unset($_SESSION['userId']);
+            $_SESSION = [];
+            respond(['error' => 'This account has been banned.'], 403);
+        }
+    }
     $user = currentUser();
     if (!$user) {
         respond(['error' => 'Sign in to continue.'], 401);
     }
     return $user;
 }
+
 
 function requireOwner(): array
 {
@@ -280,7 +345,6 @@ function routeRequest(): void
         $name = trim((string) ($input['name'] ?? ''));
         $email = strtolower(trim((string) ($input['email'] ?? '')));
         $password = (string) ($input['password'] ?? '');
-        $setupCode = (string) ($input['setupCode'] ?? '');
         if (strlen($name) < 2 || strlen($name) > 48) {
             respond(['error' => 'Name must be between 2 and 48 characters.'], 422);
         }
@@ -289,12 +353,6 @@ function routeRequest(): void
         }
         if (strlen($password) < 10 || strlen($password) > 128) {
             respond(['error' => 'Password must be at least 10 characters.'], 422);
-        }
-
-        $ownerToken = getenv('ADMIN_SETUP_TOKEN') ?: '';
-        $claimOwner = $setupCode !== '';
-        if ($claimOwner && ($ownerToken === '' || !hash_equals($ownerToken, $setupCode))) {
-            respond(['error' => 'The owner setup code is not valid.'], 403);
         }
 
         $users = mongoDatabase()->selectCollection('users');
@@ -313,25 +371,6 @@ function routeRequest(): void
             'createdAt' => new UTCDateTime(),
         ]);
         $user = $users->findOne(['_id' => $insert->getInsertedId()]);
-
-        if ($claimOwner) {
-            try {
-                $claim = mongoDatabase()->selectCollection('settings')->updateOne(
-                    ['_id' => 'owner_claimed'],
-                    ['$setOnInsert' => ['claimedAt' => new UTCDateTime()]],
-                    ['upsert' => true],
-                );
-            } catch (Throwable) {
-                $users->deleteOne(['_id' => $insert->getInsertedId()]);
-                respond(['error' => 'Owner setup has already been completed.'], 409);
-            }
-            if ($claim->getUpsertedCount() !== 1) {
-                $users->deleteOne(['_id' => $insert->getInsertedId()]);
-                respond(['error' => 'Owner setup has already been completed.'], 409);
-            }
-            $users->updateOne(['_id' => $insert->getInsertedId()], ['$set' => ['role' => 'owner']]);
-            $user['role'] = 'owner';
-        }
 
         startUserSession($user);
         respond(['user' => publicUser($user)], 201);
@@ -365,6 +404,9 @@ function routeRequest(): void
             respond(['error' => 'Check your email and password.'], 401);
         }
         $limits->deleteOne(['_id' => $ipHash]);
+        if (!empty($user['banned'])) {
+            respond(['error' => 'This account has been banned.'], 403);
+        }
         startUserSession($user);
         respond(['user' => publicUser($user)]);
     }
@@ -471,6 +513,71 @@ function routeRequest(): void
         }
         $updatedUser = $users->findOne(['_id' => $userId]);
         respond(['user' => publicUser($updatedUser)]);
+    }
+
+    if ($method === 'GET' && $path === '/api/admin/users') {
+        $admin = requireOwner();
+        $users = mongoDatabase()->selectCollection('users')->find([], ['sort' => ['createdAt' => -1]]);
+        $out = [];
+        foreach ($users as $account) {
+            $out[] = [
+                'id' => (string) $account['_id'],
+                'name' => (string) ($account['name'] ?? 'Player'),
+                'email' => (string) ($account['email'] ?? ''),
+                'role' => (string) ($account['role'] ?? 'member'),
+                'username' => (string) ($account['username'] ?? ''),
+                'banned' => (bool) ($account['banned'] ?? false),
+                'createdAt' => dateString($account['createdAt'] ?? null),
+            ];
+        }
+        respond(['users' => $out]);
+    }
+
+    if (preg_match('#^/api/admin/users/([a-f0-9]{24})/ban$#i', $path, $matches) && $method === 'POST') {
+        $admin = requireOwner();
+        $input = requestJson();
+        $targetId = $matches[1];
+        if ($targetId === $admin['id']) {
+            respond(['error' => 'You cannot ban your own account.'], 400);
+        }
+        $users = mongoDatabase()->selectCollection('users');
+        $target = $users->findOne(['_id' => new ObjectId($targetId)]);
+        if (!$target) {
+            respond(['error' => 'User not found.'], 404);
+        }
+        if (($target['role'] ?? '') === 'owner') {
+            respond(['error' => 'You cannot ban an admin account.'], 403);
+        }
+        $banned = (bool) ($input['banned'] ?? true);
+        $users->updateOne(['_id' => new ObjectId($targetId)], ['$set' => ['banned' => $banned]]);
+        $updated = $users->findOne(['_id' => new ObjectId($targetId)]);
+        respond(['user' => [
+            'id' => (string) $updated['_id'],
+            'name' => (string) ($updated['name'] ?? 'Player'),
+            'email' => (string) ($updated['email'] ?? ''),
+            'role' => (string) ($updated['role'] ?? 'member'),
+            'username' => (string) ($updated['username'] ?? ''),
+            'banned' => (bool) ($updated['banned'] ?? false),
+            'createdAt' => dateString($updated['createdAt'] ?? null),
+        ]]);
+    }
+
+    if (preg_match('#^/api/admin/users/([a-f0-9]{24})$#i', $path, $matches) && $method === 'DELETE') {
+        $admin = requireOwner();
+        $targetId = $matches[1];
+        if ($targetId === $admin['id']) {
+            respond(['error' => 'You cannot delete your own account.'], 400);
+        }
+        $users = mongoDatabase()->selectCollection('users');
+        $target = $users->findOne(['_id' => new ObjectId($targetId)]);
+        if (!$target) {
+            respond(['error' => 'User not found.'], 404);
+        }
+        if (($target['role'] ?? '') === 'owner') {
+            respond(['error' => 'You cannot delete an admin account.'], 403);
+        }
+        $users->deleteOne(['_id' => new ObjectId($targetId)]);
+        respond(['ok' => true]);
     }
 
     if ($method === 'GET' && $path === '/api/feed') {
